@@ -3,13 +3,14 @@ const fs = require('fs');
 const path = require('path');
 
 const PUPPETEER_CACHE_DIR = '/opt/render/.cache/puppeteer';
-const PUPPETEER_CHROMIUM_REVISION = '1108769';
+process.env.PUPPETEER_CACHE_DIR = PUPPETEER_CACHE_DIR;
 
 function findChromePath() {
   const possiblePaths = [
     process.env.PUPPETEER_EXECUTABLE_PATH,
     process.env.CHROME_PATH,
     path.join(PUPPETEER_CACHE_DIR, 'chrome', 'linux-146.0.7680.76', 'chrome-linux64', 'chrome'),
+    path.join(PUPPETEER_CACHE_DIR, 'chrome', 'chrome-linux64', 'chrome'),
     path.join(PUPPETEER_CACHE_DIR, 'chrome', 'linux-1108769', 'chrome-linux', 'chrome'),
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
@@ -37,11 +38,11 @@ if (!process.env.PUPPETEER_EXECUTABLE_PATH) {
   }
 }
 
+console.log('Chrome path:', process.env.PUPPETEER_EXECUTABLE_PATH);
+
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const express = require('express');
 const QRCode = require('qrcode');
-
-console.log('Chrome path:', process.env.PUPPETEER_EXECUTABLE_PATH);
 
 const app = express();
 app.use(express.json());
