@@ -10,15 +10,20 @@ app.use(express.json());
 const sessions = new Map();
 
 function createClient(sessionId) {
+  const puppeteerOptions = {
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+  };
+
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
+  }
+
   const client = new Client({
     authStrategy: new LocalAuth({
       dataPath: path.join('sessions', sessionId)
     }),
-    puppeteer: {
-      headless: true,
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    }
+    puppeteer: puppeteerOptions
   });
 
   const sessionData = {
