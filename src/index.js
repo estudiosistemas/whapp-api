@@ -97,6 +97,25 @@ app.delete('/sessions/:sessionId', async (req, res) => {
   }
 });
 
+app.get('/qr/:sessionId/value', (req, res) => {
+  const { sessionId } = req.params;
+  const session = sessions.get(sessionId);
+
+  if (!session) {
+    return res.status(404).json({ error: 'Sesión no encontrada' });
+  }
+
+  if (session.isReady) {
+    return res.json({ value: null, connected: true });
+  }
+
+  if (!session.currentQr) {
+    return res.json({ value: null, connected: false });
+  }
+
+  res.json({ value: session.currentQr, connected: false });
+});
+
 app.get('/qr/:sessionId', async (req, res) => {
   const { sessionId } = req.params;
   const session = getOrCreateSession(sessionId);
