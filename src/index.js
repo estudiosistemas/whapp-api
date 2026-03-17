@@ -1,48 +1,8 @@
-const { execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-
-const PUPPETEER_CACHE_DIR = '/opt/render/.cache/puppeteer';
-process.env.PUPPETEER_CACHE_DIR = PUPPETEER_CACHE_DIR;
-
-function findChromePath() {
-  const possiblePaths = [
-    process.env.PUPPETEER_EXECUTABLE_PATH,
-    process.env.CHROME_PATH,
-    path.join(PUPPETEER_CACHE_DIR, 'chrome', 'linux-146.0.7680.76', 'chrome-linux64', 'chrome'),
-    path.join(PUPPETEER_CACHE_DIR, 'chrome', 'chrome-linux64', 'chrome'),
-    path.join(PUPPETEER_CACHE_DIR, 'chrome', 'linux-1108769', 'chrome-linux', 'chrome'),
-    '/usr/bin/chromium',
-    '/usr/bin/chromium-browser',
-    '/usr/bin/google-chrome',
-    '/usr/bin/google-chrome-stable'
-  ];
-
-  for (const p of possiblePaths) {
-    if (p && fs.existsSync(p)) {
-      return p;
-    }
-  }
-
-  try {
-    return execSync('which chromium chromium-browser google-chrome google-chrome-stable 2>/dev/null', { encoding: 'utf8' }).trim().split('\n')[0];
-  } catch {
-    return null;
-  }
-}
-
-if (!process.env.PUPPETEER_EXECUTABLE_PATH) {
-  const chromePath = findChromePath();
-  if (chromePath) {
-    process.env.PUPPETEER_EXECUTABLE_PATH = chromePath;
-  }
-}
-
-console.log('Chrome path:', process.env.PUPPETEER_EXECUTABLE_PATH);
-
 const { Client, LocalAuth } = require('whatsapp-web.js');
 const express = require('express');
 const QRCode = require('qrcode');
+const path = require('path');
+const fs = require('fs');
 
 const app = express();
 app.use(express.json());
@@ -50,20 +10,14 @@ app.use(express.json());
 const sessions = new Map();
 
 function createClient(sessionId) {
-  const puppeteerOptions = {
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-  };
-
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
-
   const client = new Client({
     authStrategy: new LocalAuth({
       dataPath: path.join('sessions', sessionId)
     }),
-    puppeteer: puppeteerOptions
+    puppeteer: {
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    }
   });
 
   const sessionData = {
@@ -141,25 +95,6 @@ app.delete('/sessions/:sessionId', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
-
-app.get('/qr/:sessionId/value', (req, res) => {
-  const { sessionId } = req.params;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    return res.status(404).json({ error: 'Sesión no encontrada' });
-  }
-
-  if (session.isReady) {
-    return res.json({ value: null, connected: true });
-  }
-
-  if (!session.currentQr) {
-    return res.json({ value: null, connected: false });
-  }
-
-  res.json({ value: session.currentQr, connected: false });
 });
 
 app.get('/qr/:sessionId', async (req, res) => {
