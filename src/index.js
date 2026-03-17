@@ -1,41 +1,47 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
-const express = require('express');
-const QRCode = require('qrcode');
-const path = require('path');
-const fs = require('fs');
 const { execSync } = require('child_process');
+const fs = require('fs');
+const path = require('path');
 
-function findChrome() {
-  console.log('🔍 Buscando Chrome...');
-  
+const PUPPETEER_CACHE_DIR = '/opt/render/.cache/puppeteer';
+const PUPPETEER_CHROMIUM_REVISION = '1108769';
+
+function findChromePath() {
   const possiblePaths = [
+    process.env.PUPPETEER_EXECUTABLE_PATH,
     process.env.CHROME_PATH,
-    '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.76/chrome-linux64/chrome',
+    path.join(PUPPETEER_CACHE_DIR, 'chrome', 'linux-146.0.7680.76', 'chrome-linux64', 'chrome'),
+    path.join(PUPPETEER_CACHE_DIR, 'chrome', 'linux-1108769', 'chrome-linux', 'chrome'),
     '/usr/bin/chromium',
     '/usr/bin/chromium-browser',
     '/usr/bin/google-chrome',
     '/usr/bin/google-chrome-stable'
   ];
 
-  for (const chromePath of possiblePaths) {
-    if (chromePath) {
-      console.log(`  Checking: ${chromePath} - exists: ${fs.existsSync(chromePath)}`);
-      if (fs.existsSync(chromePath)) {
-        return chromePath;
-      }
+  for (const p of possiblePaths) {
+    if (p && fs.existsSync(p)) {
+      return p;
     }
   }
 
   try {
-    const output = execSync('which chromium || which chromium-browser || which google-chrome || which google-chrome-stable', { encoding: 'utf8' });
-    return output.trim();
+    return execSync('which chromium chromium-browser google-chrome google-chrome-stable 2>/dev/null', { encoding: 'utf8' }).trim().split('\n')[0];
   } catch {
     return null;
   }
 }
 
-const CHROME_PATH = findChrome();
-console.log('Chrome encontrado:', CHROME_PATH);
+if (!process.env.PUPPETEER_EXECUTABLE_PATH) {
+  const chromePath = findChromePath();
+  if (chromePath) {
+    process.env.PUPPETEER_EXECUTABLE_PATH = chromePath;
+  }
+}
+
+const { Client, LocalAuth } = require('whatsapp-web.js');
+const express = require('express');
+const QRCode = require('qrcode');
+
+console.log('Chrome path:', process.env.PUPPETEER_EXECUTABLE_PATH);
 
 const app = express();
 app.use(express.json());
@@ -48,8 +54,8 @@ function createClient(sessionId) {
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   };
 
-  if (CHROME_PATH) {
-    puppeteerOptions.executablePath = CHROME_PATH;
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
+    puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
   }
 
   const client = new Client({
