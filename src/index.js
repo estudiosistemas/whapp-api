@@ -3,8 +3,39 @@ const express = require('express');
 const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
+const { execSync } = require('child_process');
 
-const CHROME_PATH = process.env.CHROME_PATH || require('puppeteer').executablePath();
+function findChrome() {
+  console.log('🔍 Buscando Chrome...');
+  
+  const possiblePaths = [
+    process.env.CHROME_PATH,
+    '/opt/render/.cache/puppeteer/chrome/linux-146.0.7680.76/chrome-linux64/chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable'
+  ];
+
+  for (const chromePath of possiblePaths) {
+    if (chromePath) {
+      console.log(`  Checking: ${chromePath} - exists: ${fs.existsSync(chromePath)}`);
+      if (fs.existsSync(chromePath)) {
+        return chromePath;
+      }
+    }
+  }
+
+  try {
+    const output = execSync('which chromium || which chromium-browser || which google-chrome || which google-chrome-stable', { encoding: 'utf8' });
+    return output.trim();
+  } catch {
+    return null;
+  }
+}
+
+const CHROME_PATH = findChrome();
+console.log('Chrome encontrado:', CHROME_PATH);
 
 const app = express();
 app.use(express.json());
@@ -14,9 +45,12 @@ const sessions = new Map();
 function createClient(sessionId) {
   const puppeteerOptions = {
     headless: true,
-    executablePath: CHROME_PATH,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   };
+
+  if (CHROME_PATH) {
+    puppeteerOptions.executablePath = CHROME_PATH;
+  }
 
   const client = new Client({
     authStrategy: new LocalAuth({
