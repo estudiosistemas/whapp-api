@@ -11,7 +11,7 @@ importers:
       express:
         specifier: ^4.21.0
         version: 4.22.1
-      puppeteer:
+      puppeteer-core:
         specifier: ^24.39.1
         version: 24.39.1
       qrcode:
@@ -23,6 +23,10 @@ importers:
       whatsapp-web.js:
         specifier: ^1.34.6
         version: 1.34.6
+    devDependencies:
+      puppeteer:
+        specifier: ^24.39.1
+        version: 24.39.1
 
 packages:
 

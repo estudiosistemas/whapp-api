@@ -4,6 +4,8 @@ const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
 
+const CHROME_PATH = process.env.CHROME_PATH || require('puppeteer').executablePath();
+
 const app = express();
 app.use(express.json());
 
@@ -12,12 +14,9 @@ const sessions = new Map();
 function createClient(sessionId) {
   const puppeteerOptions = {
     headless: true,
+    executablePath: CHROME_PATH,
     args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
   };
-
-  if (process.env.PUPPETEER_EXECUTABLE_PATH) {
-    puppeteerOptions.executablePath = process.env.PUPPETEER_EXECUTABLE_PATH;
-  }
 
   const client = new Client({
     authStrategy: new LocalAuth({
