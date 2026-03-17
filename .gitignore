@@ -36,3 +36,4 @@ coverage
 .pnpm-workspace.yaml
 .npmrc
 nul
+index.js
