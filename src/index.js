@@ -14,22 +14,35 @@ function createClient(sessionId) {
     authStrategy: new LocalAuth({
       dataPath: path.join('sessions', sessionId)
     }),
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
+    },
     puppeteer: {
       headless: true,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas', // Reducir carga gráfica
+        '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
-        '--single-process', // <- Crucial para Render
+        '--single-process',
         '--disable-extensions',
-        '--disable-gpu', // Render no tiene GPU
-        '--js-flags="--max-old-space-size=256"', // Mantenemos el JS de Chromium en 256MB
+        '--disable-gpu',
+        '--js-flags="--max-old-space-size=256"',
         '--disable-software-rasterizer',
         '--ignore-certificate-errors',
-        '--no-default-browser-check'
+        '--no-default-browser-check',
+        '--blink-settings=imagesEnabled=false', // Bloquear imágenes
+        '--disable-webgl', // Bloquear WebGL
+        '--disable-threaded-animation', // Bloquear animaciones
+        '--disable-threaded-scrolling', // Bloquear scroll suave
+        '--disable-notifications',
+        '--disable-remote-fonts', // Bloquear fuentes externas
+        '--disable-background-networking',
+        '--disable-default-apps',
+        '--disable-sync'
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
     }
@@ -44,14 +57,26 @@ function createClient(sessionId) {
   client.on('qr', async (qr) => {
     sessionData.currentQr = qr;
     sessionData.isReady = false;
-    console.log(`📱 QR actualizado para sesión ${sessionId} - disponible en /qr/${sessionId}`);
+    console.log(`📱 [${sessionId}] QR generado. Escanea en: /qr/${sessionId}`);
+  });
+
+  client.on('authenticated', () => {
+    console.log(`🔑 [${sessionId}] ¡Autenticado! Esperando eventos de Ready...`);
+  });
+
+  client.on('auth_failure', (msg) => {
+    console.error(`❌ [${sessionId}] Error de autenticación:`, msg);
+    sessionData.isReady = false;
   });
 
   client.on('ready', () => {
-    console.clear();
-    console.log(`✅ Sesión ${sessionId} conectada!`);
+    console.log(`✅ [${sessionId}] ¡Sesión lista y funcionado!`);
     sessionData.isReady = true;
     sessionData.currentQr = null;
+  });
+
+  client.on('loading_screen', (percent, message) => {
+    console.log(`⏳ [${sessionId}] Cargando: ${percent}% - ${message}`);
   });
 
   client.on('disconnected', () => {
