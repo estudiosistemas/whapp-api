@@ -20,11 +20,16 @@ function createClient(sessionId) {
         '--no-sandbox',
         '--disable-setuid-sandbox',
         '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
+        '--disable-accelerated-2d-canvas', // Reducir carga gráfica
         '--no-first-run',
         '--no-zygote',
-        '--single-process', // <- Important for Render's limited resources
-        '--disable-extensions'
+        '--single-process', // <- Crucial para Render
+        '--disable-extensions',
+        '--disable-gpu', // Render no tiene GPU
+        '--js-flags="--max-old-space-size=256"', // Mantenemos el JS de Chromium en 256MB
+        '--disable-software-rasterizer',
+        '--ignore-certificate-errors',
+        '--no-default-browser-check'
       ],
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
     }
