@@ -8,6 +8,8 @@ pnpm-debug.log*
 .env.local
 .env.*.local
 
+.cache
+
 dist
 build
 *.tsbuildinfo
