@@ -1,334 +1,216 @@
-const { Client, LocalAuth } = require('whatsapp-web.js');
+const { 
+    default: makeWASocket, 
+    useMultiFileAuthState, 
+    DisconnectReason, 
+    fetchLatestBaileysVersion, 
+    makeCacheableSignalKeyStore 
+} = require('@whiskeysockets/baileys');
 const express = require('express');
 const QRCode = require('qrcode');
 const path = require('path');
 const fs = require('fs');
+const pino = require('pino');
 
 const app = express();
 app.use(express.json());
 
 const sessions = new Map();
+const logger = pino({ level: 'info' });
 
-function createClient(sessionId) {
-  const client = new Client({
-    authStrategy: new LocalAuth({
-      dataPath: path.join('sessions', sessionId)
-    }),
-    webVersionCache: {
-      type: 'remote',
-      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.2412.54.html',
-    },
-    puppeteer: {
-      headless: true,
-      args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
-        '--disable-dev-shm-usage',
-        '--disable-accelerated-2d-canvas',
-        '--no-first-run',
-        '--no-zygote',
-        '--single-process',
-        '--disable-extensions',
-        '--disable-gpu',
-        '--js-flags="--max-old-space-size=256"',
-        '--disable-software-rasterizer',
-        '--ignore-certificate-errors',
-        '--no-default-browser-check',
-        '--blink-settings=imagesEnabled=false', // Bloquear imágenes
-        '--disable-webgl', // Bloquear WebGL
-        '--disable-threaded-animation', // Bloquear animaciones
-        '--disable-threaded-scrolling', // Bloquear scroll suave
-        '--disable-notifications',
-        '--disable-remote-fonts', // Bloquear fuentes externas
-        '--disable-background-networking',
-        '--disable-default-apps',
-        '--disable-sync'
-      ],
-      executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
-    }
-  });
+async function createClient(sessionId) {
+    const sessionDir = path.join('sessions', sessionId);
+    if (!fs.existsSync('sessions')) fs.mkdirSync('sessions');
+    
+    const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
+    const { version } = await fetchLatestBaileysVersion();
 
-  const sessionData = {
-    client,
-    isReady: false,
-    currentQr: null
-  };
+    const sock = makeWASocket({
+        version,
+        printQRInTerminal: false,
+        auth: {
+            creds: state.creds,
+            keys: makeCacheableSignalKeyStore(state.keys, logger),
+        },
+        logger,
+        browser: ['Whapp-API', 'Chrome', '1.0.0']
+    });
 
-  client.on('qr', async (qr) => {
-    sessionData.currentQr = qr;
-    sessionData.isReady = false;
-    console.log(`📱 [${sessionId}] QR generado. Escanea en: /qr/${sessionId}`);
-  });
+    const sessionData = {
+        sock,
+        isReady: false,
+        currentQr: null,
+        status: 'initializing'
+    };
 
-  client.on('authenticated', () => {
-    console.log(`🔑 [${sessionId}] ¡Autenticado! Esperando eventos de Ready...`);
-  });
+    sock.ev.on('creds.update', saveCreds);
 
-  client.on('auth_failure', (msg) => {
-    console.error(`❌ [${sessionId}] Error de autenticación:`, msg);
-    sessionData.isReady = false;
-  });
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
+        
+        if (qr) {
+            sessionData.currentQr = qr;
+            sessionData.status = 'qr_ready';
+            console.log(`📱 [${sessionId}] Nuevo QR generado`);
+        }
 
-  client.on('ready', () => {
-    console.log(`✅ [${sessionId}] ¡Sesión lista y funcionado!`);
-    sessionData.isReady = true;
-    sessionData.currentQr = null;
-  });
+        if (connection === 'close') {
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+            console.log(`⚠️ [${sessionId}] Conexión cerrada. ¿Reconectar?: ${shouldReconnect}`);
+            sessionData.isReady = false;
+            sessionData.status = 'disconnected';
+            
+            if (shouldReconnect) {
+                setTimeout(() => createClient(sessionId), 5000);
+            } else {
+                sessions.delete(sessionId);
+                if (fs.existsSync(sessionDir)) {
+                    fs.rmSync(sessionDir, { recursive: true, force: true });
+                }
+            }
+        } else if (connection === 'open') {
+            console.log(`✅ [${sessionId}] Conexión abierta y lista!`);
+            sessionData.isReady = true;
+            sessionData.currentQr = null;
+            sessionData.status = 'connected';
+        }
+    });
 
-  client.on('loading_screen', (percent, message) => {
-    console.log(`⏳ [${sessionId}] Cargando: ${percent}% - ${message}`);
-  });
+    // Manejar mensajes (opcional, por si quieres loguear algo)
+    sock.ev.on('messages.upsert', (m) => {
+        // console.log(JSON.stringify(m, undefined, 2));
+    });
 
-  client.on('disconnected', () => {
-    console.log(`⚠️ Sesión ${sessionId} desconectada`);
-    sessionData.isReady = false;
-  });
-
-  client.on('auth_failure', () => {
-    console.error(`❌ Error de autenticación en sesión ${sessionId}`);
-    sessionData.isReady = false;
-  });
-
-  client.initialize();
-  return sessionData;
+    sessions.set(sessionId, sessionData);
+    return sessionData;
 }
 
-function getOrCreateSession(sessionId) {
-  if (!sessions.has(sessionId)) {
-    sessions.set(sessionId, createClient(sessionId));
-  }
-  return sessions.get(sessionId);
+async function getOrCreateSession(sessionId) {
+    if (!sessions.has(sessionId)) {
+        await createClient(sessionId);
+    }
+    return sessions.get(sessionId);
 }
 
 app.get('/sessions', (req, res) => {
-  const sessionList = Array.from(sessions.entries()).map(([id, data]) => ({
-    id,
-    connected: data.isReady
-  }));
-  res.json({ sessions: sessionList });
+    const sessionList = Array.from(sessions.entries()).map(([id, data]) => ({
+        id,
+        connected: data.isReady,
+        status: data.status
+    }));
+    res.json({ sessions: sessionList });
 });
 
-app.post('/sessions/:sessionId', (req, res) => {
-  const { sessionId } = req.params;
-  getOrCreateSession(sessionId);
-  res.json({ success: true, message: `Sesión ${sessionId} creada`, qrUrl: `/qr/${sessionId}` });
+app.post('/sessions/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    await getOrCreateSession(sessionId);
+    res.json({ success: true, message: `Sesión ${sessionId} iniciando`, qrUrl: `/qr/${sessionId}` });
 });
 
 app.delete('/sessions/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
-  const session = sessions.get(sessionId);
-  
-  if (!session) {
-    return res.status(404).json({ error: 'Sesión no encontrada' });
-  }
-
-  try {
-    await session.client.destroy();
-    sessions.delete(sessionId);
+    const { sessionId } = req.params;
+    const session = sessions.get(sessionId);
     
-    const sessionPath = path.join('sessions', sessionId);
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
+    if (!session) {
+        return res.status(404).json({ error: 'Sesión no encontrada' });
     }
-    
-    res.json({ success: true, message: `Sesión ${sessionId} eliminada` });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+
+    try {
+        await session.sock.logout();
+        sessions.delete(sessionId);
+        
+        const sessionPath = path.join('sessions', sessionId);
+        if (fs.existsSync(sessionPath)) {
+            fs.rmSync(sessionPath, { recursive: true, force: true });
+        }
+        
+        res.json({ success: true, message: `Sesión ${sessionId} eliminada` });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
 app.get('/qr/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
-  const session = getOrCreateSession(sessionId);
+    const { sessionId } = req.params;
+    const session = await getOrCreateSession(sessionId);
 
-  if (session.isReady) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>WhatsApp Conectado - ${sessionId}</title>
-        <meta http-equiv="refresh" content="3;url=/status/${sessionId}">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f0f2f5; }
-          .container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; }
-          h1 { color: #25D366; margin-bottom: 24px; }
-          .status { margin-top: 20px; padding: 12px 24px; border-radius: 8px; background: #d4edda; color: #155724; font-weight: 500; }
-          .redirect { margin-top: 16px; color: #666; font-size: 14px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>✅ ¡Conectado!</h1>
-          <div class="status">Sesión: ${sessionId}</div>
-          <p class="redirect">Redirigiendo en 3 segundos...</p>
-        </div>
-      </body>
-      </html>
-    `);
-  }
+    if (session.isReady) {
+        return res.send(`
+          <!DOCTYPE html><html><head><title>Conectado</title><meta http-equiv="refresh" content="3;url=/status/${sessionId}"></head>
+          <body style="font-family:sans-serif; text-align:center; padding:50px; background:#f0f2f5;">
+            <div style="background:white; padding:40px; border-radius:16px; display:inline-block;">
+                <h1 style="color:#25D366;">✅ ¡Conectado!</h1>
+                <p>Sesión: ${sessionId}</p>
+                <p style="color:#666;">Redirigiendo al estado...</p>
+            </div>
+          </body></html>
+        `);
+    }
 
-  if (!session.currentQr) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>Cargando QR...</title>
-        <meta http-equiv="refresh" content="2">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f0f2f5; }
-          .container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
-          h1 { color: #128c7e; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <h1>⏳ Generando QR...</h1>
-        </div>
-      </body>
-      </html>
-    `);
-  }
+    if (!session.currentQr) {
+        return res.send(`
+            <!DOCTYPE html><html><head><title>Cargando...</title><meta http-equiv="refresh" content="2"></head>
+            <body style="font-family:sans-serif; text-align:center; padding:50px; background:#f0f2f5;">
+                <h1>⏳ Generando QR de Baileys...</h1>
+            </body></html>
+        `);
+    }
 
-  try {
-    const qrImage = await QRCode.toDataURL(session.currentQr, {
-      width: 300,
-      margin: 2,
-      color: { dark: '#000000', light: '#ffffff' }
-    });
-
-    res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>WhatsApp QR - ${sessionId}</title>
-        <meta http-equiv="refresh" content="5">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f0f2f5; }
-          .container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; }
-          h1 { color: #128c7e; margin-bottom: 24px; }
-          img { border-radius: 8px; }
-          .status { margin-top: 20px; padding: 12px 24px; border-radius: 8px; font-weight: 500; background: #fff3cd; color: #856404; }
-          .refresh { margin-top: 16px; color: #666; font-size: 14px; }
-          .session-badge { display: inline-block; background: #e9ecef; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #495057; margin-bottom: 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="session-badge">Sesión: ${sessionId}</div>
-          <h1>📱 Conectar WhatsApp</h1>
-          <img src="${qrImage}" alt="QR Code" />
-          <div class="status">Escanea el código con tu WhatsApp</div>
-          <p class="refresh">La página se actualiza automáticamente cada 5 segundos</p>
-        </div>
-      </body>
-      </html>
-    `);
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    try {
+        const qrImage = await QRCode.toDataURL(session.currentQr, { width: 300 });
+        res.send(`
+          <!DOCTYPE html><html><head><title>Baileys QR - ${sessionId}</title><meta http-equiv="refresh" content="5"></head>
+          <body style="font-family:sans-serif; text-align:center; padding:50px; background:#f0f2f5;">
+            <div style="background:white; padding:40px; border-radius:16px; display:inline-block;">
+                <p style="background:#e9ecef; display:inline-block; padding:4px 12px; border-radius:12px;">Sesión: ${sessionId}</p>
+                <h1 style="color:#128c7e;">📱 Conectar WhatsApp (Baileys)</h1>
+                <img src="${qrImage}" alt="QR Code" />
+                <p>Escanea el código con tu WhatsApp</p>
+            </div>
+          </body></html>
+        `);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
-app.get('/status/:sessionId', (req, res) => {
-  const { sessionId } = req.params;
-  const session = sessions.get(sessionId);
-  
-  if (!session) {
-    return res.status(404).json({ error: 'Sesión no encontrada' });
-  }
+app.get('/status/:sessionId', async (req, res) => {
+    const { sessionId } = req.params;
+    const session = sessions.get(sessionId);
+    
+    if (!session) return res.status(404).json({ error: 'Sesión no encontrada' });
 
-  if (req.headers.accept?.includes('text/html')) {
-    return res.send(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <title>WhatsApp Status - ${sessionId}</title>
-        <meta http-equiv="refresh" content="10">
-        <style>
-          body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; background: #f0f2f5; }
-          .container { background: white; padding: 40px; border-radius: 16px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); text-align: center; }
-          .status { margin-top: 20px; padding: 12px 24px; border-radius: 8px; font-weight: 500; font-size: 18px; }
-          .connected { background: #d4edda; color: #155724; }
-          .disconnected { background: #f8d7da; color: #721c24; }
-          h1 { ${session.isReady ? 'color: #25D366;' : 'color: #dc3545;' } }
-          .info { margin-top: 20px; color: #666; font-size: 14px; }
-          .session-badge { display: inline-block; background: #e9ecef; padding: 4px 12px; border-radius: 12px; font-size: 12px; color: #495057; margin-bottom: 16px; }
-        </style>
-      </head>
-      <body>
-        <div class="container">
-          <div class="session-badge">Sesión: ${sessionId}</div>
-          <h1>${session.isReady ? '✅ Conectado' : '⚠️ No conectado'}</h1>
-          <div class="status ${session.isReady ? 'connected' : 'disconnected'}">
-            ${session.isReady ? 'WhatsApp vinculado y listo' : 'Escanea el QR en /qr/' + sessionId}
-          </div>
-          <p class="info">Esta página se actualiza cada 10 segundos</p>
-        </div>
-      </body>
-      </html>
-    `);
-  }
-
-  res.json({
-    sessionId,
-    connected: session.isReady,
-    state: session.isReady ? 'connected' : 'disconnected'
-  });
+    res.json({
+        sessionId,
+        connected: session.isReady,
+        status: session.status
+    });
 });
 
 app.post('/send/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
-  const { number, message } = req.body;
+    const { sessionId } = req.params;
+    const { number, message } = req.body;
+    const session = sessions.get(sessionId);
 
-  const session = sessions.get(sessionId);
+    if (!session || !session.isReady) {
+        return res.status(503).json({ error: 'Sesión no lista' });
+    }
 
-  if (!session) {
-    return res.status(404).json({ error: 'Sesión no encontrada' });
-  }
-
-  if (!number || !message) {
-    return res.status(400).json({ error: 'Faltan número o mensaje' });
-  }
-
-  if (!session.isReady) {
-    return res.status(503).json({ error: 'Cliente no conectado' });
-  }
-
-  try {
-    const formattedNumber = number.includes('@c.us') ? number : `${number}@c.us`;
-    await session.client.sendMessage(formattedNumber, message);
-    res.json({ success: true, message: 'Mensaje enviado', sessionId });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
+    try {
+        const jid = number.includes('@s.whatsapp.net') ? number : `${number}@s.whatsapp.net`;
+        await session.sock.sendMessage(jid, { text: message });
+        res.json({ success: true, message: 'Mensaje enviado via Baileys' });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
 });
 
+// Nota: Baileys no tiene una forma sencilla de listar chats sin usar un Store (memoria extra)
+// Retornamos un mensaje informativo por ahora
 app.get('/chats/:sessionId', async (req, res) => {
-  const { sessionId } = req.params;
-  const session = sessions.get(sessionId);
-
-  if (!session) {
-    return res.status(404).json({ error: 'Sesión no encontrada' });
-  }
-
-  if (!session.isReady) {
-    return res.status(503).json({ error: 'Cliente no conectado' });
-  }
-
-  try {
-    const chats = await session.client.getChats();
-    res.json(chats.map(chat => ({
-      id: chat.id._serialized,
-      name: chat.name,
-      isGroup: chat.isGroup
-    })));
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
+    res.json({ message: "La lista de chats no está disponible en modo ultra-ligero de Baileys" });
 });
 
-const PORT = process.env.PORT || 3003;
-
+const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
-  console.log(`🌐 Servidor API iniciado en http://localhost:${PORT}`);
-  console.log(`📱 Gestión de sesiones en http://localhost:${PORT}/sessions`);
+    console.log(`🌐 Baileys API iniciado en puerto ${PORT}`);
 });
